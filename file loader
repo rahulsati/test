@@ -1,0 +1,228 @@
+import React, { useState } from 'react';
+import { AzureDevOpsService } from '../utils/fileSaver';
+import './FileLoader.css';
+
+interface FileLoaderProps {
+  onFilesLoaded: (files: any[]) => void;
+  onStartDesign: () => void;
+}
+
+const FileLoader: React.FC<FileLoaderProps> = ({ onFilesLoaded, onStartDesign }) => {
+  const [azureService, setAzureService] = useState<AzureDevOpsService | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showAzureConfig, setShowAzureConfig] = useState(false);
+  const [azureConfig, setAzureConfig] = useState({
+    organizationUrl: '',
+    projectName: '',
+    repositoryName: '',
+    personalAccessToken: '',
+  });
+
+  const handleLocalFileLoad = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files) {
+      const fileArray = Array.from(files);
+      console.log('Files selected:', fileArray.map(f => f.name));
+      
+      try {
+        const processedFiles = await Promise.all(
+          fileArray.map((file) => {
+            return new Promise<any>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                try {
+                  const content = e.target?.result as string;
+                  let parsedContent;
+                  
+                  if (file.name.endsWith('.yaml') || file.name.endsWith('.yml')) {
+                    parsedContent = { 
+                      filename: file.name, 
+                      content: content, 
+                      type: 'yaml' 
+                    };
+                  } else if (file.name.endsWith('.json')) {
+                    parsedContent = { 
+                      filename: file.name, 
+                      content: JSON.parse(content), 
+                      type: 'json' 
+                    };
+                  } else {
+                    parsedContent = { 
+                      filename: file.name, 
+                      content: content, 
+                      type: 'text' 
+                    };
+                  }
+                  
+                  resolve(parsedContent);
+                } catch (error) {
+                  console.error('Error parsing file:', file.name, error);
+                  reject(error);
+                }
+              };
+              reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
+              reader.readAsText(file);
+            });
+          })
+        );
+        
+        console.log('Processed files:', processedFiles);
+        onFilesLoaded(processedFiles);
+        onStartDesign();
+      } catch (error) {
+        console.error('Error processing files:', error);
+        alert('Error processing files. Please try again.');
+      }
+    }
+    
+    // Reset the input
+    event.target.value = '';
+  };
+
+  const handleAzureLoad = async () => {
+    if (!azureService) {
+      setShowAzureConfig(true);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Placeholder: Load files from Azure DevOps
+      const files = await azureService.listFilesInFolder('generated-configs');
+      onFilesLoaded(files);
+      onStartDesign();
+    } catch (error) {
+      console.error('Error loading from Azure DevOps:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAzureConfigSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const service = new AzureDevOpsService(
+      azureConfig.organizationUrl,
+      azureConfig.projectName,
+      azureConfig.repositoryName,
+      azureConfig.personalAccessToken
+    );
+    setAzureService(service);
+    setShowAzureConfig(false);
+    handleAzureLoad();
+  };
+
+  return (
+    <div className="file-loader">
+      <div className="loader-container">
+        <h1>Portfolio Validation Designer</h1>
+        <p>Choose how to start your workflow design</p>
+
+        <div className="loader-options">
+          <div className="loader-card">
+            <h3>Load from Local Files</h3>
+            <p>Import existing configuration files from your computer</p>
+            <input
+              type="file"
+              multiple
+              accept=".yaml,.yml,.txt,.json"
+              onChange={handleLocalFileLoad}
+              className="file-input"
+              id="local-files"
+            />
+            <label htmlFor="local-files" className="btn btn-primary">
+              Choose Files
+            </label>
+          </div>
+
+          <div className="loader-card">
+            <h3>Load from Azure DevOps</h3>
+            <p>Connect to your Azure DevOps repository</p>
+            <button 
+              onClick={handleAzureLoad} 
+              className="btn btn-secondary"
+              disabled={loading}
+            >
+              {loading ? 'Loading...' : 'Connect to Azure DevOps'}
+            </button>
+          </div>
+
+          <div className="loader-card">
+            <h3>Start Fresh</h3>
+            <p>Begin with a new workflow design</p>
+            <button onClick={onStartDesign} className="btn btn-success">
+              New Design
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {showAzureConfig && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Azure DevOps Configuration</h2>
+              <button
+                onClick={() => setShowAzureConfig(false)}
+                className="btn-close"
+              >
+                ×
+              </button>
+            </div>
+            <form onSubmit={handleAzureConfigSubmit} className="azure-form">
+              <div className="form-group">
+                <label>Organization URL</label>
+                <input
+                  type="text"
+                  value={azureConfig.organizationUrl}
+                  onChange={(e) => setAzureConfig(prev => ({...prev, organizationUrl: e.target.value}))}
+                  placeholder="https://dev.azure.com/yourorg"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Project Name</label>
+                <input
+                  type="text"
+                  value={azureConfig.projectName}
+                  onChange={(e) => setAzureConfig(prev => ({...prev, projectName: e.target.value}))}
+                  placeholder="YourProject"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Repository Name</label>
+                <input
+                  type="text"
+                  value={azureConfig.repositoryName}
+                  onChange={(e) => setAzureConfig(prev => ({...prev, repositoryName: e.target.value}))}
+                  placeholder="YourRepository"
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Personal Access Token</label>
+                <input
+                  type="password"
+                  value={azureConfig.personalAccessToken}
+                  onChange={(e) => setAzureConfig(prev => ({...prev, personalAccessToken: e.target.value}))}
+                  placeholder="Your PAT"
+                  required
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" onClick={() => setShowAzureConfig(false)} className="btn btn-secondary">
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  Connect
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default FileLoader;
