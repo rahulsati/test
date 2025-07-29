@@ -291,11 +291,8 @@ const FlowEditor: React.FC<FlowEditorProps> = ({ loadedFiles }) => {
   const handleGenerateFiles = async (node: Node<NodeData>) => {
     const files = generateOutputFiles(node.data, node.id);
     
-    // Save to local storage
+    // Save to local storage (this also handles the downloads)
     LocalFileManager.saveWorkflow(node.id, node.data.name, files);
-    
-    // Also save as downloadable files
-    await saveFilesLocally(files, node.id);
     
     if (azureService) {
       const success = await azureService.saveFilesToAzureDevOps(files, node.id);
