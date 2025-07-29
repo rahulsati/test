@@ -1,0 +1,430 @@
+import React, { useCallback, useRef, useState, useMemo, useEffect } from 'react';
+import ReactFlow, {
+  addEdge,
+  useNodesState,
+  useEdgesState,
+  Controls,
+  MiniMap,
+  Background,
+  BackgroundVariant,
+} from 'reactflow';
+import type { Node, Connection } from 'reactflow';
+import 'reactflow/dist/style.css';
+import NodeForm from './NodeForm';
+import CustomNode from './CustomNode';
+import { generateOutputFiles } from '../utils/fileGenerator';
+import { saveFilesLocally, AzureDevOpsService } from '../utils/fileSaver';
+import { LocalFileManager } from '../utils/localFileManager';
+import './FlowEditor.css';
+
+interface NodeData {
+  name: string;
+  description: string;
+  fetchData: Array<{
+    from: string;
+    condition: string;
+    withCondition: string;
+  }>;
+  evaluate: {
+    description: string;
+  };
+  onPass: {
+    type: 'manual' | 'node' | 'end';
+    value: string;
+  };
+  onFail: {
+    type: 'manual' | 'node' | 'end';
+    value: string;
+  };
+}
+
+interface FlowEditorProps {
+  loadedFiles: any[];
+}
+
+const FlowEditor: React.FC<FlowEditorProps> = ({ loadedFiles }) => {
+  const nodeTypes = useMemo(() => ({
+    custom: CustomNode,
+  }), []);
+  console.log('Loaded files:', loadedFiles); // Will be used for loading existing workflows
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<Node<NodeData> | null>(null);
+  const [azureService] = useState<AzureDevOpsService | null>(null);
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+
+  // Process loaded files and convert them to nodes
+  useEffect(() => {
+    if (loadedFiles && loadedFiles.length > 0) {
+      console.log('Processing loaded files:', loadedFiles);
+      
+      const newNodes: Node<NodeData>[] = [];
+      
+      loadedFiles.forEach((file, index) => {
+        try {
+          let nodeData: NodeData;
+          
+          if (file.type === 'yaml' && file.content) {
+            // Parse YAML content to extract node data
+            const yamlContent = file.content;
+            console.log('Parsing YAML content:', yamlContent);
+            
+            // Parse YAML based on actual structure with actions
+            const lines = yamlContent.split('\n');
+            const yamlData: any = {};
+            let currentSection = '';
+            let inOnFail = false;
+            
+            lines.forEach(line => {
+              const trimmed = line.trim();
+              const leadingSpaces = line.length - line.trimStart().length;
+              
+              if (!trimmed || trimmed.startsWith('#')) return; // Skip empty lines and comments
+              
+              if (trimmed.startsWith('id:')) {
+                yamlData.id = trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '');
+              } else if (trimmed.startsWith('name:')) {
+                yamlData.name = trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '');
+              } else if (trimmed.startsWith('description:')) {
+                yamlData.description = trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '');
+              } else if (trimmed.startsWith('actions:')) {
+                yamlData.actions = [];
+                currentSection = 'actions';
+                inOnFail = false;
+              } else if (trimmed.startsWith('on_pass:')) {
+                yamlData.on_pass = trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '');
+                currentSection = '';
+                inOnFail = false;
+              } else if (trimmed.startsWith('on_fail:')) {
+                const value = trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '');
+                if (value) {
+                  yamlData.on_fail = value;
+                  inOnFail = false;
+                } else {
+                  yamlData.on_fail = {};
+                  inOnFail = true;
+                }
+                currentSection = '';
+              } else if (inOnFail && trimmed.startsWith('manual:')) {
+                yamlData.on_fail = {
+                  type: 'manual',
+                  value: trimmed.split(':', 2)[1]?.trim().replace(/['"]/g, '')
+                };
+                inOnFail = false;
+              } else if (currentSection === 'actions' && trimmed.startsWith('- ')) {
+                // Parse action items like "- fetch_data: modified-trades-exist from Market Data Service with sector"
+                const actionLine = trimmed.substring(2); // Remove "- "
+                if (actionLine.startsWith('fetch_data:')) {
+                  const fetchContent = actionLine.split(':', 2)[1]?.trim();
+                  if (fetchContent) {
+                    // Parse "modified-trades-exist from Market Data Service with sector"
+                    const parts = fetchContent.split(' from ');
+                    const condition = parts[0]?.trim() || '';
+                    const rest = parts[1] || '';
+                    const serviceParts = rest.split(' with ');
+                    const from = serviceParts[0]?.trim() || '';
+                    const withCondition = serviceParts[1]?.trim() || '';
+                    
+                    yamlData.actions.push({
+                      type: 'fetch',
+                      condition,
+                      from,
+                      withCondition
+                    });
+                  }
+                } else if (actionLine.startsWith('evaluate:')) {
+                  const evaluateDescription = actionLine.split(':', 2)[1]?.trim();
+                  yamlData.actions.push({
+                    type: 'evaluate',
+                    description: evaluateDescription || ''
+                  });
+                }
+              }
+            });
+            
+            // Convert to NodeData format
+            console.log('Parsed YAML data:', yamlData);
+            
+            const fetchActions = yamlData.actions ? yamlData.actions.filter((a: any) => a.type === 'fetch') : [];
+            const evaluateAction = yamlData.actions ? yamlData.actions.find((a: any) => a.type === 'evaluate') : null;
+            
+            // Handle on_pass and on_fail
+            let onPassType = 'end';
+            let onPassValue = '';
+            if (yamlData.on_pass) {
+              if (yamlData.on_pass === 'end') {
+                onPassType = 'end';
+              } else {
+                onPassType = 'node';
+                onPassValue = yamlData.on_pass;
+              }
+            }
+            
+            let onFailType = 'manual';
+            let onFailValue = '';
+            if (yamlData.on_fail) {
+              if (typeof yamlData.on_fail === 'string') {
+                if (yamlData.on_fail === 'end') {
+                  onFailType = 'end';
+                } else {
+                  onFailType = 'node';
+                  onFailValue = yamlData.on_fail;
+                }
+              } else if (yamlData.on_fail.type === 'manual') {
+                onFailType = 'manual';
+                onFailValue = yamlData.on_fail.value || '';
+              }
+            }
+            
+            nodeData = {
+              name: yamlData.name || file.filename || 'Unnamed Node',
+              description: yamlData.description || 'Loaded from YAML file',
+              fetchData: fetchActions.length > 0 ? fetchActions.map((a: any) => ({
+                from: a.from || '',
+                condition: a.condition || '',
+                withCondition: a.withCondition || '',
+              })) : [{
+                from: '',
+                condition: '',
+                withCondition: '',
+              }],
+              evaluate: {
+                description: evaluateAction?.description || '',
+              },
+              onPass: {
+                type: onPassType as 'manual' | 'node' | 'end',
+                value: onPassValue,
+              },
+              onFail: {
+                type: onFailType as 'manual' | 'node' | 'end',
+                value: onFailValue,
+              },
+            };
+            
+            console.log('Created NodeData:', nodeData);
+          } else {
+            // Default node data for non-YAML files
+            nodeData = {
+              name: file.filename || `Loaded File ${index + 1}`,
+              description: `Loaded from ${file.type} file`,
+              fetchData: [{
+                from: '',
+                condition: '',
+                withCondition: '',
+              }],
+              evaluate: {
+                description: '',
+              },
+              onPass: {
+                type: 'end',
+                value: '',
+              },
+              onFail: {
+                type: 'manual',
+                value: '',
+              },
+            };
+          }
+          
+          const newNode: Node<NodeData> = {
+            id: `loaded-${Date.now()}-${index}`,
+            type: 'custom',
+            position: { x: 100 + (index * 300), y: 100 + (index * 100) },
+            data: nodeData,
+          };
+          
+          newNodes.push(newNode);
+          console.log('Created node:', newNode);
+        } catch (error) {
+          console.error('Error processing file:', file, error);
+        }
+      });
+      
+      if (newNodes.length > 0) {
+        setNodes(newNodes);
+        console.log('Added nodes to flow:', newNodes);
+      }
+    }
+  }, [loadedFiles, setNodes]);
+
+  const onConnect = useCallback(
+    (params: Connection) => setEdges((eds) => addEdge(params, eds)),
+    [setEdges]
+  );
+
+  const onNodeClick = useCallback((_event: React.MouseEvent, node: Node<NodeData>) => {
+    setSelectedNode(node);
+    setShowForm(true);
+  }, []);
+
+  const handleFormSubmit = (formData: NodeData) => {
+    if (selectedNode) {
+      // Update existing node
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === selectedNode.id
+            ? {
+                ...node,
+                data: formData,
+                label: formData.name || 'Unnamed Node',
+              }
+            : node
+        )
+      );
+    } else {
+      // Create new node
+      const newNode: Node<NodeData> = {
+        id: `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        type: 'custom',
+        position: { x: Math.random() * 400, y: Math.random() * 400 },
+        data: formData,
+      };
+      setNodes((nds) => nds.concat(newNode));
+    }
+    
+    setShowForm(false);
+    setSelectedNode(null);
+  };
+
+  const handleGenerateFiles = async (node: Node<NodeData>) => {
+    const files = generateOutputFiles(node.data, node.id);
+    
+    // Save to local storage
+    LocalFileManager.saveWorkflow(node.id, node.data.name, files);
+    
+    // Also save as downloadable files
+    await saveFilesLocally(files, node.id);
+    
+    if (azureService) {
+      const success = await azureService.saveFilesToAzureDevOps(files, node.id);
+      if (success) {
+        alert(`Files generated and saved locally and to Azure DevOps for node: ${node.data.name}`);
+      } else {
+        alert(`Files generated and saved locally for node: ${node.data.name}. Azure DevOps save failed.`);
+      }
+    } else {
+      alert(`Files generated and saved locally for node: ${node.data.name}`);
+    }
+  };
+
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+
+      const reactFlowBounds = reactFlowWrapper.current?.getBoundingClientRect();
+      if (!reactFlowBounds || !reactFlowInstance) return;
+
+      const position = reactFlowInstance.project({
+        x: event.clientX - reactFlowBounds.left,
+        y: event.clientY - reactFlowBounds.top,
+      });
+
+      const newNode: Node<NodeData> = {
+        id: `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        type: 'custom',
+        position,
+        data: {
+          name: '',
+          description: '',
+          fetchData: [{
+            from: '',
+            condition: '',
+            withCondition: '',
+          }],
+          evaluate: {
+            description: '',
+          },
+          onPass: {
+            type: 'end',
+            value: '',
+          },
+          onFail: {
+            type: 'manual',
+            value: '',
+          },
+        },
+      };
+
+      setNodes((nds) => nds.concat(newNode));
+    },
+    [reactFlowInstance, nodes.length, setNodes]
+  );
+
+  return (
+    <div className="flow-editor">
+      <div className="toolbar">
+        <button onClick={() => setShowForm(true)} className="btn-primary">
+          Add Node
+        </button>
+      </div>
+
+      <div className="flow-container" ref={reactFlowWrapper}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={onNodeClick}
+          onInit={setReactFlowInstance}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          nodeTypes={nodeTypes}
+          fitView
+        >
+          <Controls />
+          <MiniMap />
+          <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
+        </ReactFlow>
+      </div>
+
+      <div className="node-list">
+        <h3>Nodes</h3>
+        {nodes.map((node) => (
+          <div key={node.id} className="node-item">
+            <span>{(node.data as NodeData).name || node.id}</span>
+            <button
+              onClick={() => handleGenerateFiles(node)}
+              className="btn-small"
+            >
+              Generate Files
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>{selectedNode ? 'Edit Node' : 'Create New Node'}</h2>
+              <button
+                onClick={() => {
+                  setShowForm(false);
+                  setSelectedNode(null);
+                }}
+                className="btn-close"
+              >
+                ×
+              </button>
+            </div>
+            <NodeForm
+              onSubmit={handleFormSubmit}
+              initialData={selectedNode?.data as NodeData}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default FlowEditor;
