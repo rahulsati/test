@@ -1,0 +1,181 @@
+import React, { useState } from 'react';
+import { LocalFileManager } from '../utils/localFileManager';
+import './AppHeader.css';
+
+interface AppHeaderProps {
+  onLoadWorkflow: (files: any) => void;
+  onSaveAll: () => void;
+  showSaveButton: boolean;
+}
+
+const AppHeader: React.FC<AppHeaderProps> = ({ onLoadWorkflow, onSaveAll, showSaveButton }) => {
+  const [showLoadMenu, setShowLoadMenu] = useState(false);
+  const [savedWorkflows, setSavedWorkflows] = useState(LocalFileManager.getWorkflowFiles());
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleLoadFromLocal = () => {
+    setShowLoadMenu(false);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      try {
+        const fileArray = Array.from(files);
+        console.log('Header - Files selected:', fileArray.map(f => f.name));
+        
+        const processedFiles = await Promise.all(
+          fileArray.map((file) => {
+            return new Promise<any>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                try {
+                  const content = e.target?.result as string;
+                  let parsedContent;
+                  
+                  if (file.name.endsWith('.yaml') || file.name.endsWith('.yml')) {
+                    parsedContent = {
+                      filename: file.name,
+                      content: content,
+                      type: 'yaml'
+                    };
+                  } else if (file.name.endsWith('.json')) {
+                    parsedContent = {
+                      filename: file.name,
+                      content: JSON.parse(content),
+                      type: 'json'
+                    };
+                  } else {
+                    parsedContent = {
+                      filename: file.name,
+                      content: content,
+                      type: 'text'
+                    };
+                  }
+                  
+                  resolve(parsedContent);
+                } catch (error) {
+                  console.error('Error parsing file:', file.name, error);
+                  reject(error);
+                }
+              };
+              reader.onerror = () => reject(new Error(`Failed to read file: ${file.name}`));
+              reader.readAsText(file);
+            });
+          })
+        );
+        
+        console.log('Header - Processed files:', processedFiles);
+        onLoadWorkflow(processedFiles);
+      } catch (error) {
+        console.error('Error processing files:', error);
+        alert('Error processing files. Please try again.');
+      }
+    }
+    event.target.value = '';
+  };
+
+  const handleLoadWorkflow = (id: string) => {
+    const files = LocalFileManager.loadWorkflowFiles(id);
+    if (files) {
+      onLoadWorkflow(files);
+    }
+    setShowLoadMenu(false);
+  };
+
+  const handleLoadFromGit = () => {
+    // Placeholder for Git integration
+    console.log('Load from Git - to be implemented');
+    alert('Git integration will be implemented later');
+  };
+
+  return (
+    <header className="app-header">
+      <div className="header-left">
+        <div className="logo">
+          <span className="logo-icon">📊</span>
+          <span className="logo-text">Portfolio Validation Designer</span>
+        </div>
+      </div>
+      
+      <div className="header-center">
+        {/* Title removed as requested */}
+      </div>
+      
+      <div className="header-right">
+        <div className="load-dropdown">
+          <button className="load-btn" onClick={() => {
+            const workflows = LocalFileManager.getWorkflowFiles();
+            setSavedWorkflows(workflows);
+            setShowLoadMenu(!showLoadMenu);
+          }}>
+            Load ▼
+          </button>
+          
+          {showLoadMenu && (
+            <div className="load-menu">
+              <div className="load-section">
+                <h4>Select Load Option</h4>
+              </div>
+              <button 
+                className="load-option" 
+                onClick={handleLoadFromLocal}
+              >
+                Load from File System
+              </button>
+              <button 
+                className="load-option" 
+                onClick={handleLoadFromGit}
+              >
+                Load from Git
+              </button>
+              
+              {savedWorkflows.length > 0 && (
+                <>
+                  <div className="load-separator"></div>
+                  <div className="saved-workflows">
+                    <h5>Saved Workflows</h5>
+                    {savedWorkflows.map((workflow) => (
+                      <button
+                        key={workflow.id}
+                        className="workflow-item"
+                        onClick={() => handleLoadWorkflow(workflow.id)}
+                      >
+                        <span className="workflow-name">{workflow.name}</span>
+                        <span className="workflow-date">
+                          {new Date(workflow.timestamp).toLocaleDateString()}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+        
+        {showSaveButton && (
+          <button className="save-btn" onClick={onSaveAll}>
+            Save All
+          </button>
+        )}
+        
+        <div className="workspace-info">
+          <span>Workspace: Not selected</span>
+        </div>
+      </div>
+      
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileSelect}
+        style={{ display: 'none' }}
+        accept=".yaml,.yml,.json,.txt"
+        multiple
+      />
+    </header>
+  );
+};
+
+export default AppHeader;
